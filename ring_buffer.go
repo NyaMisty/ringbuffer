@@ -6,6 +6,7 @@ package ringbuffer
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"unsafe"
 )
@@ -77,6 +78,40 @@ func (r *RingBuffer) Read(p []byte) (n int, err error) {
 	r.isFull = false
 	r.mu.Unlock()
 	return n, err
+}
+
+func (r *RingBuffer) Advance(l int) error {
+	if l == 0 {
+		return nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.w == r.r && !r.isFull {
+		//r.mu.Unlock()
+		return fmt.Errorf("Empty buf while advance")
+	}
+
+	if r.w > r.r {
+		n := r.w - r.r
+		if n < l {
+			return fmt.Errorf("advance longer than buffer")
+		}
+		r.r = (r.r + l) % r.size
+		//r.mu.Unlock()
+		return nil
+	}
+
+	n := r.size - r.r + r.w
+	if n < l {
+		return fmt.Errorf("advance longer than buffer")
+	}
+	
+	r.r = (r.r + l) % r.size
+
+	r.isFull = false
+	//r.mu.Unlock()
+	return nil
 }
 
 // ReadByte reads and returns the next byte from the input or ErrIsEmpty.
@@ -172,6 +207,10 @@ func (r *RingBuffer) WriteByte(c byte) error {
 	return nil
 }
 
+func (r *RingBuffer) Readable() int {
+	return r.Length()
+}
+
 // Length return the length of available read bytes.
 func (r *RingBuffer) Length() int {
 	r.mu.Lock()
@@ -257,6 +296,37 @@ func (r *RingBuffer) Bytes() []byte {
 	}
 
 	return buf
+}
+
+type TwoBuffers struct {
+	First  []byte // the first part of the contents
+	Second []byte // the second part of the contents
+}
+
+func (r *RingBuffer) BytesTwo() TwoBuffers {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.w == r.r {
+		if r.isFull {
+			return TwoBuffers{First: r.buf[r.r:], Second: r.buf[:r.w]}
+		}
+		return TwoBuffers{First: []byte{}, Second: []byte{}}
+	}
+
+	if r.w > r.r {
+		return TwoBuffers{First: r.buf[r.r:r.w], Second: []byte{}}
+	}
+
+	n := r.size - r.r + r.w
+
+	if r.r+n < r.size {
+		return TwoBuffers{First: r.buf[r.r:r.r+n], Second: []byte{}}
+	} else {
+		c1 := r.size - r.r
+		c2 := n - c1
+		return TwoBuffers{First: r.buf[r.r:r.size], Second: r.buf[0:c2]}
+	}
 }
 
 // IsFull returns this ringbuffer is full.
